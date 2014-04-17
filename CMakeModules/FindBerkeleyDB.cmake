@@ -34,6 +34,9 @@ FIND_PATH(BDB_INCLUDE_DIR NAMES db.h db_cxx.h
   /usr/local/include/db5
   /usr/local/include/libdb4
   /usr/local/include/db4
+  /usr/local/include/db6
+  /usr/local/include/db46
+  /usr/local/include/db42
   PATH_SUFFIXES include
 )
 
