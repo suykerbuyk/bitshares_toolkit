@@ -20,3 +20,7 @@ programs/dns/dns_server
 programs/dns/dns_client
 programs/kids/kids
 programs/utils/bts_create_key
+gen_cscope
+cscope.*
+build/*
+.lvimrc

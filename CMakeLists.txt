@@ -9,6 +9,7 @@ include( GetGitRevisionDescription )
 get_git_head_revision( GIT_REFSPEC GIT_SHA2 )
 
 
+
 if( WIN32 )
     message( STATUS "Configuring Bitshares on WIN32")
     set( DB_VERSION 60 )
@@ -18,7 +19,7 @@ if( WIN32 )
     set( LEVEL_DB_DIR vendor/leveldb-win )
 
     SET( DEFAULT_EXECUTABLE_INSTALL_DIR bin/ )
-	
+
     set( PLATFORM_SPECIFIC_LIBS WS2_32.lib iphlpapi.lib )
     set(CRYPTO_LIB)
 
@@ -26,6 +27,9 @@ if( WIN32 )
     SET(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /SAFESEH:NO")
     SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /SAFESEH:NO")
 else( WIN32 )
+    if ( ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD" )
+       set( FREEBSD true )
+    endif()
     # Apple AND Linux Options Here
     find_package( ZLIB REQUIRED )
     set( LEVEL_DB_DIR vendor/leveldb-1.12.0 )
@@ -35,12 +39,15 @@ else( WIN32 )
     if(NOT READLINE_INCLUDE_DIR OR NOT READLINE_LIBRARIES)
       MESSAGE(FATAL_ERROR "Could not find lib readline.")
     endif()
-    
+
     if( APPLE )
         # Apple Specific Options Here
         message( STATUS "Configuring Bitshares on OS X" )
         set( CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++11 -stdlib=libc++  -Wall -ferror-limit=4" )
-    else( APPLE ) 
+    elseif( FREEBSD )
+        message( STATUS "Configuring Bitshares on FreeBSD" )
+        set( CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++11 -stdlib=libc++  -Wall -ferror-limit=4" )
+    else( APPLE )
         # Linux Specific Options Here
         message( STATUS "Configuring Bitshares on Linux" )
         set( CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++11 -Wall " )
@@ -48,7 +55,7 @@ else( WIN32 )
         set( pthread_library pthread)
         set( crypto_library crypto)
     endif( APPLE )
-	set(Boost_USE_STATIC_LIBS ON)
+        set(Boost_USE_STATIC_LIBS ON)
 endif( WIN32 )
 
 find_package( BerkeleyDB )
