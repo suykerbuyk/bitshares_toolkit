@@ -1,7 +1,7 @@
 [submodule "libraries/fc"]
 	path = libraries/fc
-	url = https://github.com/InvictusInnovations/fc.git
+	url = git@github.com:suykerbuyk/bitshares-fc.git
 [submodule "vendor"]
 	path = vendor
-	url = https://github.com/BitShares/vendor.git
+	url = git@github.com:suykerbuyk/bitshares-vendor.git
     ignore = dirty
