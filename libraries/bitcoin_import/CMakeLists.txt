@@ -1,6 +1,6 @@
 include_directories( "${CMAKE_CURRENT_SOURCE_DIR}/include" )
 include_directories( "${CMAKE_SOURCE_DIR}/libraries/fc/include" )
-# This library depends upon BDB, if BDB is not found then it compiles out support for BDB 
+# This library depends upon BDB, if BDB is not found then it compiles out support for BDB
 FIND_PACKAGE( BerkeleyDB )
 if( NOT ${BerkeleyDB_FOUND} )
   message( WARNING "Missing required BerkeleyDB package, Bitcoin Core Wallet Imports Disabled")

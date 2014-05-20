@@ -26,17 +26,17 @@ ENDIF()
 FIND_PATH(BDB_INCLUDE_DIR NAMES db.h db_cxx.h
   HINTS "${BDB_ROOT_DIR}/include"
   PATHS ${BDB_ROOT_DIR} 
-  /usr/include/libdb5
-  /usr/include/db5
-  /usr/include/libdb4
-  /usr/include/db4
+  /usr/local/include/db6
+  /usr/local/include/db46
+  /usr/local/include/db42
   /usr/local/include/libdb5
   /usr/local/include/db5
   /usr/local/include/libdb4
   /usr/local/include/db4
-  /usr/local/include/db6
-  /usr/local/include/db46
-  /usr/local/include/db42
+  /usr/include/libdb5
+  /usr/include/db5
+  /usr/include/libdb4
+  /usr/include/db4
   PATH_SUFFIXES include
 )
 
