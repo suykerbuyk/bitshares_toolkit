@@ -1,41 +1,35 @@
 #pragma once
-#include <bts/blockchain/asset.hpp>
-#include <bts/blockchain/transaction.hpp>
-#include <bts/blockchain/chain_database.hpp>
 
-#include <bts/dns/dns_transaction_validator.hpp>
+#include <bts/blockchain/chain_database.hpp>
+#include <bts/db/level_map.hpp>
+#include <fc/reflect/variant.hpp>
 
 namespace bts { namespace dns {
 
-namespace detail  { class dns_db_impl; }
-
-struct dns_record
-{
-    bts::blockchain::address           owner;
-    std::vector<char>                  value;
-    bts::blockchain::asset             last_price; // TODO delete? this isn't used since it's on the tx out
-    bts::blockchain::output_reference  last_update_ref;
-};
+using namespace bts::blockchain;
 
 class dns_db : public bts::blockchain::chain_database
 {
     public:
         dns_db();
-        ~dns_db();
-    
-        void             open( const fc::path& dir, bool create );
-        void             close();
-        dns_record       get_dns_record( const std::string& name );
-        bool             has_dns_record( const std::string& name );
-        void             store_dns_record( const std::string& name, const dns_record& record);
+        virtual ~dns_db() override;
+
+        virtual void open(const fc::path& dir, bool create = true) override;
+        virtual void close() override;
+        virtual void store(const trx_block& blk, const signed_transactions& deterministic_trxs,
+                           const block_evaluation_state_ptr& state) override;
+
+        // TODO: Add delete operation
+        void                set_dns_ref(const std::string& key, const output_reference& ref);
+        output_reference    get_dns_ref(const std::string& key);
+        bool                has_dns_ref(const std::string& key);
+
+        std::map<std::string, output_reference> filter(bool (*f)(const std::string&, const output_reference&, dns_db& db));
 
     private:
-         std::unique_ptr<detail::dns_db_impl> my;
-
+        bts::db::level_map<std::string, output_reference>  _dns2ref;
 };
 
+typedef std::shared_ptr<dns_db> dns_db_ptr;
 
-}} // bts::dns
-
-
-FC_REFLECT( bts::dns::dns_record, (owner)(value)(last_price)(last_update_ref) );
+} } // bts::dns

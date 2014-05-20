@@ -1,158 +1,140 @@
 #pragma once
+#include <bts/blockchain/types.hpp>
+#include <bts/blockchain/chain_interface.hpp>
+#include <bts/blockchain/pending_chain_state.hpp>
 #include <bts/blockchain/block.hpp>
-#include <bts/blockchain/transaction.hpp>
-#include <bts/blockchain/transaction_validator.hpp>
-#include <bts/blockchain/pow_validator.hpp>
 
-namespace fc
-{
-   class path;
-};
+#include <fc/filesystem.hpp>
+
+#include <functional>
 
 namespace bts { namespace blockchain {
 
-    namespace detail  { class chain_database_impl; }
 
-    struct name_record
-    {
-       name_record()
-       :delegate_id(0),votes_for(0),votes_against(0){}
-       name_record( const claim_name_output& o )
-          :delegate_id(o.delegate_id),name(o.name),data(o.data),owner(o.owner),votes_for(0),votes_against(0){}
+   namespace detail { class chain_database_impl; }
 
-       name_record( uint32_t id, std::string n, const fc::ecc::public_key& k )
-       :delegate_id(id),name(n),owner(k),votes_for(0),votes_against(0){}
+   struct block_summary
+   {
+      full_block                                    block_data;
+      pending_chain_state_ptr                       applied_changes;
+   };
 
-       uint32_t             delegate_id;
-       std::string          name;
-       std::string          data;
-       fc::ecc::public_key  owner;
-       int64_t              votes_for;
-       int64_t              votes_against;
-    };
-
-    /**
-     *  @class chain_database
-     *  @ingroup blockchain
-     *
-     *  The chain_database provides the generic implementation of basic
-     *  blockchain semantics which requires that blocks can be pushed,
-     *  popped and that all transactions are validated.
-     *
-     *  There can be many variations on the chain_database each of which
-     *  implements custom logic for handling different transactions.
-     *
-     *  This database only stores valid blocks and applied transactions,
-     *  it does not store invalid/orphaned blocks and transactions which
-     *  are maintained in a separate database
-     */
-    class chain_database
-    {
-       protected:
-          /**
-           *  This method should perform the validation step of making sure that the block and
-           *  all associated deterministic transactions can be applied. It should throw an
-           *  exception of the validation fails.
-           */
-          virtual block_evaluation_state_ptr validate( const trx_block& blk, const signed_transactions& deterministic_trxs );
-
-          /**
-           *  Called after a block has been validated and appends
-           *  it to the block chain storing all relevant transactions.
-           */
-          virtual void store( const trx_block& blk, const signed_transactions& deterministic_trxs, const block_evaluation_state_ptr& state );
-
-
-       public:
-          chain_database();
-          virtual ~chain_database();
-
-          /**
-           *  There are many kinds of deterministic transactions that various blockchains may require
-           *  such as automatic inactivity fees, lottery winners, and market making.   This method
-           *  can be overloaded to
-           */
-          virtual signed_transactions generate_deterministic_transactions();
-
-          void evaluate_transaction( const signed_transaction& trx );
-
-          fc::optional<name_record> lookup_name( const std::string& name );
-          fc::optional<name_record> lookup_delegate( uint16_t del );
-
-          /** for debug purposes, print delegates and their rank */
-          void dump_delegates()const;
-
-
-          //@{
-          /**
-           *  The signing authority is a key that signs every block
-           *  once they have successfully pushed it to their chain.
-           *
-           *  The purpose of the signing authority is to make sure that
-           *  there are no chain forks until the consensus algorithm can
-           *  be reached.
-           */
-          void                        set_trustee( const address& addr );
-          address                     get_trustee()const;
-          //@}
-
-          /**
-           * When testing the chain there are different POW validation checks, so
-           * this must be set by the creator of the chain.
-           */
-          void set_pow_validator( const pow_validator_ptr& v );
-          pow_validator_ptr get_pow_validator()const;
-
-          void set_transaction_validator( const transaction_validator_ptr& v );
-          transaction_validator_ptr get_transaction_validator()const;
-
-          virtual void open( const fc::path& dir, bool create = true );
-          virtual void close();
-
-          const signed_block_header&  get_head_block()const;
-          uint64_t                    total_shares()const;
-          uint32_t                    head_block_num()const;
-          block_id_type               head_block_id()const;
-          uint64_t                    get_stake(); // head - 1
-          asset                       get_fee_rate()const;
-
-
-
-         trx_num    fetch_trx_num( const uint160& trx_id );
-         meta_trx   fetch_trx( const trx_num& t );
-
-         signed_transaction          fetch_transaction( const transaction_id_type& trx_id );
-         std::vector<meta_trx_input> fetch_inputs( const std::vector<trx_input>& inputs, uint32_t head = trx_num::invalid_block_num );
-
-         trx_output fetch_output(const output_reference& ref);
-
-         uint32_t                   fetch_block_num( const block_id_type& block_id );
-         signed_block_header        fetch_block( uint32_t block_num );
-         digest_block               fetch_digest_block( uint32_t block_num );
-         trx_block                  fetch_trx_block( uint32_t block_num );
+   class chain_observer
+   {
+      public:
+         virtual ~chain_observer(){}
 
          /**
-          *  Validates the block and then pushes it into the database.
+          * This method is called anytime the blockchain state changes including
+          * undo operations.
+          */
+         virtual void state_changed( const pending_chain_state_ptr& state ) = 0;
+         /**
+          *  This method is called anytime a block is applied to the chain.
+          */
+         virtual void block_applied( const block_summary& summary ) = 0;
+   };
+
+   class chain_database : public chain_interface, public std::enable_shared_from_this<chain_database>
+   {
+      public:
+         chain_database();
+         virtual ~chain_database() override;
+
+         void open( const fc::path& data_dir, fc::optional<fc::path> genesis_file = fc::optional<fc::path>() );
+         void close();
+
+         void set_observer( chain_observer* observer );
+
+         transaction_evaluation_state_ptr              store_pending_transaction( const signed_transaction& trx );
+         std::vector<transaction_evaluation_state_ptr> get_pending_transactions()const;
+         bool                                          is_known_transaction( const transaction_id_type& trx_id );
+         void export_fork_graph( const fc::path& filename )const;
+
+         /** Produce a block for the given timeslot, the block is not signed because that is the
+          *  role of the wallet.
+          */
+         full_block                    generate_block( fc::time_point_sec timestamp );
+
+         bool                          is_known_block( const block_id_type& block_id )const;
+
+         fc::ecc::public_key           get_signing_delegate_key( fc::time_point_sec )const;
+         name_id_type                  get_signing_delegate_id( fc::time_point_sec )const;
+         uint32_t                      get_block_num( const block_id_type& )const;
+         signed_block_header           get_block_header( const block_id_type& )const;
+         signed_block_header           get_block_header( uint32_t block_num )const;
+         full_block                    get_block( const block_id_type& )const;
+         full_block                    get_block( uint32_t block_num )const;
+         signed_block_header           get_head_block()const;
+         uint32_t                      get_head_block_num()const;
+         block_id_type                 get_head_block_id()const;
+         osigned_transaction           get_transaction( const transaction_id_type& trx_id )const;
+         virtual otransaction_location get_transaction_location( const transaction_id_type& trx_id )const override;
+
+         std::vector<name_record > get_names( const std::string& first, uint32_t count )const;
+         std::vector<asset_record> get_assets( const std::string& first_symbol, uint32_t count )const;
+
+         /** should perform any chain reorganization required
           *
-          *  Attempts to append block b to the block chain with the given trxs.
-          */
-         void push_block( const trx_block& b );
+          *  @return the pending chain state generated as a result of pushing the block,
+          *  this state can be used by wallets to scan for changes without the wallets
+          *  having to process raw transactions.
+          **/
+         virtual void push_block( const full_block& block_data );
+
 
          /**
-          *  Removes the top block from the stack and marks all spent outputs as
-          *  unspent.
+          *  Evaluate the transaction and return the results.
           */
-         virtual trx_block pop_block();
+         virtual transaction_evaluation_state_ptr evaluate_transaction( const signed_transaction& trx );
 
-       private:
-         void   store_trx( const signed_transaction& trx, const trx_num& t );
+
+         /** return the timestamp from the head block */
+         virtual fc::time_point_sec   now()const override;
+
+         /** return the current fee rate in millishares */
+         virtual int64_t              get_fee_rate()const override;
+         virtual int64_t              get_delegate_pay_rate()const override;
+         std::vector<name_id_type>    get_active_delegates()const;
+         std::vector<name_id_type>    get_delegates_by_vote( uint32_t first=0, uint32_t count = -1 )const;
+         std::vector<name_record>     get_delegate_records_by_vote( uint32_t first=0, uint32_t count = -1)const;
+
+         virtual void                 remove_asset_record( asset_id_type id )const;
+         virtual void                 remove_balance_record( const balance_id_type& id )const;
+         virtual void                 remove_name_record( name_id_type id )const;
+
+         void                         scan_assets( const std::function<void( const asset_record& )>& callback );
+         void                         scan_balances( const std::function<void( const balance_record& )>& callback );
+         void                         scan_names( const std::function<void( const name_record& )>& callback );
+
+         virtual fc::variant           get_property( chain_property_enum property_id )const;
+         virtual void                  set_property( chain_property_enum property_id, 
+                                                     const fc::variant& property_value );
+
+         virtual oasset_record        get_asset_record( asset_id_type id )const override;
+         virtual obalance_record      get_balance_record( const balance_id_type& id )const override;
+         virtual oname_record         get_name_record( name_id_type id )const override;
+
+         virtual oasset_record        get_asset_record( const std::string& symbol )const override;
+         virtual oname_record         get_name_record( const std::string& name )const override;
+
+         virtual void                 store_asset_record( const asset_record& r ) override;
+         virtual void                 store_balance_record( const balance_record& r ) override;
+         virtual void                 store_name_record( const name_record& r ) override;
+         virtual void                 store_transaction_location( const transaction_id_type&,
+                                                                  const transaction_location& loc ) override;
+
+         virtual void                  store_proposal_record( const proposal_record& r );
+         virtual oproposal_record      get_proposal_record( proposal_id_type id )const;
+                                                                                                          
+         virtual void                  store_proposal_vote( const proposal_vote& r );
+         virtual oproposal_vote        get_proposal_vote( proposal_vote_id_type id )const;
+
+      private:
          std::unique_ptr<detail::chain_database_impl> my;
-    }; // chain_database
+   };
 
-    typedef std::shared_ptr<chain_database> chain_database_ptr;
+   typedef std::shared_ptr<chain_database> chain_database_ptr;
 
-}  } // bts::blockchain
-
-FC_REFLECT( bts::blockchain::trx_num,  (block_num)(trx_idx) );
-FC_REFLECT( bts::blockchain::name_record, (delegate_id)(name)(data)(owner)(votes_for)(votes_against) )
+} } // bts::blockchain
 

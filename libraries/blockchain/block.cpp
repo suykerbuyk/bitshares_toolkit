@@ -1,108 +1,83 @@
-#include <algorithm>
-
-#include <fc/io/raw.hpp>
-#include <fc/reflect/variant.hpp>
-
 #include <bts/blockchain/block.hpp>
 #include <bts/blockchain/config.hpp>
-#include <bts/blockchain/small_hash.hpp>
+#include <fc/log/logger.hpp>
+#include <algorithm>
 
-#include <bts/blockchain/difficulty.hpp>
-namespace bts { namespace blockchain  {
+namespace bts { namespace blockchain {
 
-
-   digest_block::digest_block( const signed_block_header& b, 
-                               const signed_transactions& trxs, 
-                               const signed_transactions& determinstic_trxs )
-   :signed_block_header(b)
+   digest_type block_header::digest()const
    {
-      trx_ids.reserve( trxs.size() );
-      for( auto trx : trxs ) 
-         trx_ids.push_back( trx.id() );
-      for( auto trx : determinstic_trxs) 
-         deterministic_ids.push_back( trx.id() );
+      fc::sha256::encoder enc;
+      fc::raw::pack( enc, *this );
+      return enc.result();
    }
 
+   block_id_type signed_block_header::id()const
+   {
+      fc::sha512::encoder enc;
+      fc::raw::pack( enc, *this );
+      return fc::ripemd160::hash( enc.result() );
+   }
 
-  uint160 trx_block::calculate_merkle_root( const signed_transactions& determinstic_trxs )const
-  {
-     if( trxs.size() == 0 ) return uint160();
-     if( trxs.size() == 1 ) return trxs.front().id();
+   bool signed_block_header::validate_signee( const public_key_type& expected_signee )const
+   { 
+      return fc::ecc::public_key( delegate_signature, digest() ) == expected_signee;
+   }
+   public_key_type signed_block_header::signee()const
+   { 
+      return fc::ecc::public_key( delegate_signature, digest() );
+   }
 
-     std::vector<uint160> layer_one;
-     for( const signed_transaction& trx : trxs )
-        layer_one.push_back( trx.id() );
-     for( const signed_transaction& trx : determinstic_trxs )
-        layer_one.push_back( trx.id() );
+   void signed_block_header::sign( const fc::ecc::private_key& signer )
+   { try {
+      delegate_signature = signer.sign_compact( digest() );
+   } FC_RETHROW_EXCEPTIONS( warn, "" ) }
 
-     std::vector<uint160> layer_two;
-     while( layer_one.size() > 1 )
-     {
-        if( layer_one.size() % 2 == 1 )
-        {
-          layer_one.push_back( uint160() );
-        }
+   size_t full_block::block_size()const
+   {
+      fc::datastream<size_t> ds;
+      fc::raw::pack( ds, *this );
+      return ds.tellp();
+   }
 
-        static_assert( sizeof(uint160[2]) == 40, "validate there is no padding between array items" );
-        for( uint32_t i = 0; i < layer_one.size(); i += 2 )
-        {
-            layer_two.push_back(  small_hash( (char*)&layer_one[i], 2*sizeof(uint160) ) );
-        }
+   digest_type digest_block::calculate_transaction_digest()const
+   {
+      fc::sha512::encoder enc;
+      fc::raw::pack( enc, user_transaction_ids );
+      return fc::sha256::hash( enc.result() );
+   }
 
-        layer_one = std::move(layer_two);
-     }
-     return layer_one.front();
-  }
+   int64_t block_header::next_fee( int64_t current_fee, size_t block_size )const
+   {
+     uint64_t next_fee_base = block_size * current_fee / BTS_BLOCKCHAIN_TARGET_BLOCK_SIZE;
+     uint64_t next_fee = ((BTS_BLOCKCHAIN_BLOCKS_PER_DAY-1)*current_fee + next_fee_base) / BTS_BLOCKCHAIN_BLOCKS_PER_DAY;
+     return std::max<uint64_t>(next_fee,BTS_BLOCKCHAIN_MIN_FEE);
+   }
 
-  uint64_t block_header::min_fee()
-  {
-     return BTS_BLOCKCHAIN_MIN_FEE;
-  }
+   share_type block_header::next_delegate_pay( share_type current_pay, share_type block_fees )const
+   {
+     uint64_t next_pay = ((BTS_BLOCKCHAIN_BLOCKS_PER_DAY-1)*current_pay + (block_fees)) / BTS_BLOCKCHAIN_BLOCKS_PER_DAY;
+     return next_pay;
+   }
+   full_block::operator digest_block()const
+   {
+      digest_block db( (signed_block_header&)*this );
+      db.user_transaction_ids.reserve( user_transactions.size() );
+      for( auto item : user_transactions )
+         db.user_transaction_ids.push_back( item.id() );
+      return db;
+   }
 
-  uint64_t block_header::calculate_next_fee( uint64_t prev_fee, uint64_t block_size )
-  {
-     // 0.5% of 4 Million coins divided among 144 blocks per day for 365 blocks per year at 512KB per block
-     // yields the min fee per byte.  
-     uint64_t next_fee_base = block_size * prev_fee / (512*1024);
-     uint64_t next_fee = (99*prev_fee + next_fee_base) / 100;
-     return std::max<uint64_t>(next_fee,min_fee());
-  }
-
-
-  size_t trx_block::block_size()const
-  {
-     fc::datastream<size_t> ds;
-     fc::raw::pack( ds, *this );
-     return ds.tellp();
-  }
-
-  /**
-   *  @return the digest of the block header used to evaluate the proof of work
-   */
-  block_id_type signed_block_header::id()const
-  {
-     fc::sha512::encoder enc;
-     fc::raw::pack( enc, *this );
-     return small_hash( enc.result() );
-  }
-  
-  /**
-   *  @return the digest of the block header used to evaluate the proof of work
-   */
-  fc::sha256 block_header::digest()const
-  {
-     fc::sha256::encoder enc;
-     fc::raw::pack( enc, *this );
-     return enc.result();
-  }
-
-  void signed_block_header::sign( const fc::ecc::private_key& k )
-  {
-      trustee_signature = k.sign_compact( digest() );
-  }
-  fc::ecc::public_key  signed_block_header::signee()const
-  {
-     return fc::ecc::public_key( trustee_signature, digest() );
-  }
+   bool digest_block::validate_digest()const
+   {
+      return calculate_transaction_digest() == transaction_digest;
+   }
+   bool digest_block::validate_unique()const
+   {
+      std::unordered_set<transaction_id_type> trx_ids;
+      for( auto id : user_transaction_ids )
+         if( !trx_ids.insert(id).second ) return false;
+      return true;
+   }
 
 } } // bts::blockchain

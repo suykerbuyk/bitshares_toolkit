@@ -1,275 +1,246 @@
-#include <bts/blockchain/config.hpp>
-#include <bts/wallet/wallet.hpp>
-
 #include <bts/dns/dns_wallet.hpp>
-#include <bts/dns/outputs.hpp>
-#include <bts/dns/dns_config.hpp>
-
-#include<fc/reflect/variant.hpp>
-#include<fc/io/raw.hpp>
-#include<fc/io/raw_variant.hpp>
-
-#include <fc/log/logger.hpp>
+#include <sstream>
 
 namespace bts { namespace dns {
 
-using namespace bts::blockchain;
-
-dns_wallet::dns_wallet()
-//:my(new detail::dns_wallet_impl())
+dns_wallet::dns_wallet(const dns_db_ptr& db) : _db(db)
 {
+    FC_ASSERT(db != nullptr);
+    _transaction_validator = std::dynamic_pointer_cast<dns_transaction_validator>(db->get_transaction_validator());
+    FC_ASSERT(_transaction_validator != nullptr);
 }
 
 dns_wallet::~dns_wallet()
 {
 }
 
-bts::blockchain::signed_transaction dns_wallet::buy_domain(
-                    const std::string& name, bts::blockchain::asset amount, dns_db& db)
+signed_transaction dns_wallet::bid(const std::string& key, const asset& bid_price,
+                                   const signed_transactions& pending_txs)
 { try {
-    signed_transaction trx;
-    // TODO check name length
-   
-    auto domain_addr = new_recv_address("Owner address for domain: " + name);
-    auto change_addr = new_recv_address("Change address");
-    auto req_sigs = std::unordered_set<bts::blockchain::address>();
-    auto inputs = std::vector<trx_input>();
-    auto total_in = bts::blockchain::asset(); // set by collect_inputs
+    FC_ASSERT(_transaction_validator->is_valid_key(key), "Invalid key");
 
-    // if there is record and it's not expired and it's for sale, make a bid
-    if (db.has_dns_record(name))
+    /* Key should be new, for auction, or expired */
+    bool new_or_expired;
+    output_reference prev_output_ref;
+    FC_ASSERT(key_is_available(key, pending_txs, new_or_expired, prev_output_ref), "Key not available");
+
+    signed_transaction tx;
+    claim_dns_output dns_output(key, claim_dns_output::last_tx_type_enum::auction, new_receive_address("Key: " + key));
+
+    if (new_or_expired)
     {
-        // check "for sale" state
-        auto old_record = db.get_dns_record(name);
-        auto old_utxo_ref = old_record.last_update_ref;
-        auto old_output = db.fetch_output(old_utxo_ref);
-        auto old_dns_output = old_output.as<claim_domain_output>();
-        if (old_dns_output.flags != claim_domain_output::for_auction)
-        {
-            FC_ASSERT(!"tried to make a bid for a name that is not for sale");
-        }
-        auto block_num = db.fetch_trx_num(old_utxo_ref.trx_hash).block_num;
-        auto current_block = db.head_block_num();
-        // check age
-        // TODO put constant 3 in config
-        if (current_block - block_num < BTS_BLOCKCHAIN_BLOCKS_PER_DAY * 3)
-        {
-
-            auto domain_output = claim_domain_output();
-            domain_output.name = name;
-            domain_output.value = std::vector<char>();
-            domain_output.owner = domain_addr;
-            domain_output.flags = claim_domain_output::for_auction;
-
-            auto old_ask_amt = old_output.amount.get_rounded_amount();
-            auto required_in = BTS_DNS_MIN_BID_FROM(old_ask_amt);
-            trx.inputs = collect_inputs( required_in, total_in, req_sigs);
-            auto change_amt = total_in - required_in;
-            
-            //TODO macro-ize
-            auto amt_to_past_owner = old_ask_amt + ((required_in - old_ask_amt) / 2);
-
-            // fee is implicit from difference
-            //auto amt_as_fee = (required_in - old_ask_amt) / 2;
-
-            trx.outputs.push_back( trx_output( claim_by_signature_output( old_dns_output.owner ),
-                                               amt_to_past_owner ) );
-            trx.outputs.push_back( trx_output( domain_output, amount ) );
-            trx.outputs.push_back( trx_output( claim_by_signature_output( change_addr ), change_amt ) );
-
-            trx.sigs.clear();
-            sign_transaction(trx, req_sigs, false);
-
-            trx = add_fee_and_sign(trx, amount, total_in, req_sigs);
-
-            return trx;
-
-        } else if (current_block - block_num < BTS_BLOCKCHAIN_BLOCKS_PER_YEAR) {
-            FC_ASSERT(!"Tried to bid on domain that is not for sale (auction timed out but not explicitly marked as done)");
-        }
+        tx.outputs.push_back(trx_output(dns_output, bid_price));
     }
-    
-    // otherwise, you're starting a new auction
-    
-    trx.inputs = collect_inputs( amount, total_in, req_sigs );
-    auto change_amt = total_in - amount;
+    else
+    {
+        tx.inputs.push_back(trx_input(prev_output_ref));
 
-    auto domain_output = claim_domain_output();
-    domain_output.name = name;
-    domain_output.value = std::vector<char>();
-    domain_output.owner = domain_addr;
-    domain_output.flags = claim_domain_output::for_auction;
+        auto prev_output = _db->fetch_output(prev_output_ref);
+        FC_ASSERT(_transaction_validator->is_valid_bid_price(bid_price, prev_output.amount), "Invalid bid price");
+        auto transfer_amount = _transaction_validator->get_bid_transfer_amount(bid_price, prev_output.amount);
 
-    trx.outputs.push_back( trx_output( domain_output, amount ) );
-    trx.outputs.push_back( trx_output( claim_by_signature_output( change_addr ), change_amt ) );
-
-    trx.sigs.clear();
-    sign_transaction(trx, req_sigs, false); //TODO what is last arg?
-
-    trx = add_fee_and_sign(trx, amount, total_in, req_sigs);
-
-    return trx;
-
-} FC_RETHROW_EXCEPTIONS(warn, "buy_domain ${name} with ${amt}", ("name", name)("amt", amount)) }
-
-bts::blockchain::signed_transaction dns_wallet::update_record(
-                                             const std::string& name, address domain_addr,
-                                             fc::variant value)
-{ try {
-    signed_transaction trx;
-     // TODO check name length
-   
-    auto change_addr = new_recv_address("Change address");
-    auto req_sigs = std::unordered_set<bts::blockchain::address>();
-    bts::blockchain::asset total_in; // set by collect_inputs
-
-   
-    auto serialized_value = fc::raw::pack(value);
-    if (serialized_value.size() > BTS_DNS_MAX_VALUE_LEN) {
-        FC_ASSERT(!"Serialized value too long in update_record");
+        /* Fee is implicit from difference */
+        auto prev_dns_output = to_dns_output(prev_output);
+        tx.outputs.push_back(trx_output(claim_by_signature_output(prev_dns_output.owner), transfer_amount));
+        tx.outputs.push_back(trx_output(dns_output, bid_price));
     }
-    
-    trx.inputs = collect_inputs( asset(), total_in, req_sigs );
-   
-    for (auto pair : get_unspent_outputs())
-    {
-        if ( pair.second.claim_func == claim_domain
-          && pair.second.as<claim_domain_output>().name == name)
-        {
-            trx.inputs.push_back( trx_input( get_ref_from_output_idx(pair.first) ) );
-            break;
-        }
-        FC_ASSERT(!"Tried to update record but name UTXO not found in wallet");
-    } 
 
-    auto change_amt = total_in;
+    return collect_inputs_and_sign(tx, bid_price);
+} FC_RETHROW_EXCEPTIONS(warn, "bid on key ${k} with price ${p}", ("k", key) ("p", bid_price)); }
 
-    auto domain_output = claim_domain_output();
-    domain_output.name = name;
-    domain_output.value = serialized_value;
-    domain_output.owner = domain_addr;
-    domain_output.flags = claim_domain_output::not_for_sale;
-
-    trx.outputs.push_back( trx_output( domain_output, asset() ) );
-    trx.outputs.push_back( trx_output( claim_by_signature_output( change_addr ), change_amt ) );
-
-    trx.sigs.clear();
-    sign_transaction(trx, req_sigs, false);
-
-    trx = add_fee_and_sign(trx, asset(), total_in, req_sigs);
-
-    return trx;
-
-} FC_RETHROW_EXCEPTIONS(warn, "update_record ${name} with value ${val}", ("name", name)("val", value)) }
-
-
-bts::blockchain::signed_transaction dns_wallet::sell_domain(
-                                    const std::string& name, asset amount)
+signed_transaction dns_wallet::ask(const std::string& key, const asset& ask_price,
+                                   const signed_transactions& pending_txs)
 { try {
-    signed_transaction trx;
-     // TODO check name length
-   
-    auto change_addr = new_recv_address("Change address");
-    auto sale_addr = new_recv_address("Domain sale address");
-    auto req_sigs = std::unordered_set<bts::blockchain::address>();
-    bts::blockchain::asset total_in; // set by collect_inputs
-   
-    trx.inputs = collect_inputs( asset(), total_in, req_sigs );
-   
-    for (auto pair : get_unspent_outputs())
-    {
-        if ( pair.second.claim_func == claim_domain
-          && pair.second.as<claim_domain_output>().name == name)
-        {
-            trx.inputs.push_back( trx_input( get_ref_from_output_idx(pair.first) ) );
-            break;
-        }
-        FC_ASSERT(!"Tried to sell a name UTXO not found in wallet");
-    } 
+    FC_ASSERT(_transaction_validator->is_valid_key(key), "Invalid key");
 
-    auto change_amt = total_in;
+    /* Key should exist and be owned */
+    output_reference prev_output_ref;
+    FC_ASSERT(key_is_useable(key, pending_txs, prev_output_ref), "Key unavailable");
 
-    auto domain_output = claim_domain_output();
-    domain_output.name = name;
-    domain_output.value = std::vector<char>();
-    domain_output.owner = sale_addr;
-    domain_output.flags = claim_domain_output::for_auction;
+    auto prev_output = _db->fetch_output(prev_output_ref);
+    auto prev_dns_output = to_dns_output(prev_output);
 
-    trx.outputs.push_back( trx_output( domain_output, amount ) );
-    trx.outputs.push_back( trx_output( claim_by_signature_output( change_addr ), change_amt ) );
+    claim_dns_output dns_output(key, claim_dns_output::last_tx_type_enum::auction, prev_dns_output.owner);
 
-    trx.sigs.clear();
-    sign_transaction(trx, req_sigs, false);
+    return update(dns_output, ask_price, prev_output_ref, prev_dns_output.owner);
+} FC_RETHROW_EXCEPTIONS(warn, "ask on key ${k} with price ${p}", ("k", key) ("p", ask_price)); }
 
-    trx = add_fee_and_sign(trx, asset(), total_in, req_sigs);
+signed_transaction dns_wallet::transfer(const std::string& key, const address& recipient,
+                                        const signed_transactions& pending_txs)
+{ try {
+    FC_ASSERT(_transaction_validator->is_valid_key(key), "Invalid key");
 
-    return trx;
+    /* Key should exist and be owned */
+    output_reference prev_output_ref;
+    FC_ASSERT(key_is_useable(key, pending_txs, prev_output_ref), "Key unavailable");
 
+    auto prev_output = _db->fetch_output(prev_output_ref);
+    auto prev_dns_output = to_dns_output(prev_output);
 
-} FC_RETHROW_EXCEPTIONS(warn, "sell_domai ${name} with ${amt}", ("name", name)("amt", amount)) }
+    claim_dns_output dns_output(key, claim_dns_output::last_tx_type_enum::update, recipient, prev_dns_output.value);
 
+    return update(dns_output, prev_output.amount, prev_output_ref, prev_dns_output.owner);
+} FC_RETHROW_EXCEPTIONS(warn, "transfer key ${k} with recipient ${r}", ("k", key) ("r", recipient)); }
 
-bool dns_wallet::scan_output( const trx_output& out,
-                              const output_reference& ref,
-                              const bts::wallet::output_index& oidx )
+signed_transaction dns_wallet::release(const std::string& key,
+                                       const signed_transactions& pending_txs)
+{ try {
+    FC_ASSERT(_transaction_validator->is_valid_key(key), "Invalid key");
+
+    /* Key should exist and be owned */
+    output_reference prev_output_ref;
+    FC_ASSERT(key_is_useable(key, pending_txs, prev_output_ref), "Key unavailable");
+
+    auto prev_output = _db->fetch_output(prev_output_ref);
+    auto prev_dns_output = to_dns_output(prev_output);
+
+    claim_dns_output dns_output(key, claim_dns_output::last_tx_type_enum::release, prev_dns_output.owner);
+
+    return update(dns_output, prev_output.amount, prev_output_ref, prev_dns_output.owner);
+} FC_RETHROW_EXCEPTIONS(warn, "release key ${k}", ("k", key)); }
+
+signed_transaction dns_wallet::set(const std::string& key, const fc::variant& value,
+                                   const signed_transactions& pending_txs)
+{ try {
+    FC_ASSERT(_transaction_validator->is_valid_key(key), "Invalid key");
+    FC_ASSERT(_transaction_validator->is_valid_value(serialize_value(value)), "Invalid value");
+
+    /* Key should exist and be owned */
+    output_reference prev_output_ref;
+    FC_ASSERT(key_is_useable(key, pending_txs, prev_output_ref), "Key unavailable");
+
+    auto prev_output = _db->fetch_output(prev_output_ref);
+    auto prev_dns_output = to_dns_output(prev_output);
+
+    claim_dns_output dns_output(key, claim_dns_output::last_tx_type_enum::update, prev_dns_output.owner, serialize_value(value));
+
+    return update(dns_output, prev_output.amount, prev_output_ref, prev_dns_output.owner);
+} FC_RETHROW_EXCEPTIONS(warn, "set key ${k} with value ${v}", ("k", key) ("v", value)); }
+
+// TODO: Also check current pending_txs
+fc::variant dns_wallet::lookup(const std::string& key,
+                               const signed_transactions& pending_txs)
+{ try {
+    FC_ASSERT(_transaction_validator->is_valid_key(key), "Invalid key");
+    FC_ASSERT(_db->has_dns_ref(key), "Key does not exist");
+
+    auto output = _db->fetch_output(_db->get_dns_ref(key));
+
+    return unserialize_value(to_dns_output(output).value);
+} FC_RETHROW_EXCEPTIONS(warn, "lookup key ${k}", ("k", key)); }
+
+// TODO: Also check current pending_txs
+std::vector<trx_output> dns_wallet::get_active_auctions()
 {
-    try {
-        switch ( out.claim_func )
-        {
-            case claim_domain:
-            {
-                if (is_my_address( out.as<claim_domain_output>().owner ))
-                {
-                    cache_output( out, ref, oidx );
-                    return true;
-                }
-                return false;
-            }
-            default:
-                return wallet::scan_output( out, ref, oidx );
-        }
-    } FC_RETHROW_EXCEPTIONS( warn, "" )
+    std::vector<trx_output> list;
+
+    auto f = [](const std::string& k, const output_reference& r, dns_db& db)->bool
+    {
+        auto transaction_validator = std::dynamic_pointer_cast<dns_transaction_validator>(db.get_transaction_validator());
+        FC_ASSERT(transaction_validator != nullptr);
+        return !transaction_validator->auction_is_closed(r);
+    };
+
+    auto map = _db->filter(f);
+
+    for (auto iter = map.begin(); iter != map.end(); iter++)
+        list.push_back(_db->fetch_output(iter->second));
+
+    return list;
 }
 
-/* Warning! Assumes last output is the change address! */
-// TODO you know what happens when you assume...
-signed_transaction dns_wallet::add_fee_and_sign(signed_transaction& trx,
-                                                bts::blockchain::asset required_in,
-                                                bts::blockchain::asset& total_in,
-                                                std::unordered_set<address> req_sigs)
+std::string dns_wallet::get_input_info_string(bts::blockchain::chain_database& db, const trx_input& in)
 {
-    uint64_t trx_bytes = fc::raw::pack( trx ).size();
-    bts::blockchain::asset fee = get_fee_rate() * trx_bytes;
-    auto change = trx.outputs.back().amount;
-    auto change_addr = trx.outputs.back().as<claim_by_signature_output>().owner;
-
-    wlog("req in: ${req}, total in: ${tot}, fee:${fee}", ("req", required_in)("tot", total_in)("fee", fee));
-    if (total_in >= required_in + fee)
-    {
-        change = change - fee;
-        trx.outputs.back() = trx_output( claim_by_signature_output( change_addr ), change );
-        if ( change == asset() )
-        {
-            trx.outputs.pop_back();
-        }
-    }
-    else 
-    {
-        fee = fee + fee; //TODO should be recursive since you could grab extra from lots of inputs
-        req_sigs.clear();
-        total_in = asset();
-        trx.inputs = collect_inputs( required_in + fee, total_in, req_sigs);
-        change = total_in - (required_in + fee);
-        trx.outputs.back() = trx_output( claim_by_signature_output( change_addr ), change );
-        if ( change == asset() )
-        {
-            trx.outputs.pop_back();
-        }
-
-    }
-    trx.sigs.clear();
-    sign_transaction( trx, req_sigs, true );
-    return trx;
+    //TODO this should print info about what we're claiming the output as (expired/auction etc)
+    return get_output_info_string(db.fetch_output(in.output_ref));
 }
 
-}} // bts::dns
+std::string dns_wallet::get_output_info_string(const trx_output& out)
+{
+    if (!is_dns_output(out))
+        return wallet::get_output_info_string(out);
+
+    std::stringstream ret;
+    auto dns_out = to_dns_output(out);
+    std::string owner_str = dns_out.owner;
+    ret << "DNS Claim\n  Key: \"" << dns_out.key << "\"\n  Owner: " <<
+       owner_str << "\n  Amount: " << std::string(out.amount);
+    return ret.str();
+}
+
+bool dns_wallet::scan_output(transaction_state& state, const trx_output& out, const output_reference& ref,
+                             const output_index& idx)
+{
+    if (!is_dns_output(out))
+        return wallet::scan_output(state, out, ref, idx);
+
+    auto dns_output = to_dns_output(out);
+
+    if (is_my_address(dns_output.owner))
+    {
+        cache_output(state.trx.vote, out, ref, idx);
+        return true;
+    }
+
+    return false;
+}
+
+signed_transaction dns_wallet::update(const claim_dns_output& dns_output, const asset& amount,
+                                      const output_reference& prev_output_ref, const address& prev_owner)
+{ try {
+    signed_transaction tx;
+    std::unordered_set<address> req_sigs;
+
+    tx.inputs.push_back(trx_input(prev_output_ref));
+    tx.outputs.push_back(trx_output(dns_output, amount));
+    req_sigs.insert(prev_owner);
+
+    return collect_inputs_and_sign(tx, asset(), req_sigs);
+} FC_RETHROW_EXCEPTIONS(warn, "update on key ${k} with amount ${a}", ("k", dns_output.key) ("a", amount)); }
+
+std::vector<std::string> dns_wallet::get_keys_from_txs(const signed_transactions& txs)
+{
+    std::vector<std::string> keys;
+
+    for (auto &tx : txs)
+    {
+        for (auto &output : tx.outputs)
+        {
+            if (!is_dns_output(output))
+                continue;
+
+            keys.push_back(to_dns_output(output).key);
+        }
+    }
+
+    return keys;
+}
+
+std::vector<std::string> dns_wallet::get_keys_from_unspent(const std::map<output_index, trx_output>& unspent_outputs)
+{
+    std::vector<std::string> keys;
+
+    for (auto pair : unspent_outputs)
+    {
+        if (!is_dns_output(pair.second))
+            continue;
+
+        keys.push_back(to_dns_output(pair.second).key);
+    }
+
+    return keys;
+}
+
+bool dns_wallet::key_is_available(const std::string& key, const signed_transactions& pending_txs, bool& new_or_expired,
+                                  output_reference& prev_output_ref)
+{
+    return _transaction_validator->key_is_available(key, get_keys_from_txs(pending_txs), new_or_expired, prev_output_ref);
+}
+
+bool dns_wallet::key_is_useable(const std::string& key, const signed_transactions& pending_txs, output_reference& prev_output_ref)
+{
+    return _transaction_validator->key_is_useable(key, get_keys_from_txs(pending_txs),
+            get_keys_from_unspent(get_unspent_outputs()), prev_output_ref);
+}
+
+} } // bts::dns

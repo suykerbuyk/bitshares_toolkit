@@ -1,28 +1,27 @@
 #pragma once
+#include <bts/blockchain/pts_address.hpp>
 #include <fc/array.hpp>
+#include <fc/crypto/ripemd160.hpp>
 #include <string>
 
-namespace fc { namespace ecc { class public_key; } }
+namespace fc { namespace ecc { 
+    class public_key; 
+    typedef fc::array<char,33>  public_key_data; 
+} } // fc::ecc 
 
 namespace bts { namespace blockchain {
 
+   struct withdraw_condition;
+
    /**
-    *  @brief encapsulates an encoded, checksumed public key in
-    *  binary form.   It can be converted to base58 for display
-    *  or input purposes and can also be constructed from an ecc 
-    *  public key.
+    *  @brief a 160 bit hash of a public key
     *
-    *  An valid address is 20 bytes with the following form:
+    *  An address can be converted to or from a base58 string with 32 bit checksum.
     *
-    *  First 3-bits are 0, followed by bits to 3-127 of sha256(pub_key), followed 
-    *  a 32 bit checksum calculated as the first 32 bits of the sha256 of
-    *  the first 128 bits of the address.
+    *  An address is calculated as ripemd160( sha512( compressed_ecc_public_key ) ) 
     *
-    *  The result of this is an address that can be 'verified' by
-    *  looking at the first character (base58) and has a built-in
-    *  checksum to prevent mixing up characters.
-    *
-    *  It is stored as 20 bytes.
+    *  When converted to a string, checksum calculated as the first 4 bytes ripemd160( address ) is
+    *  appended to the binary address before converting to base58.
     */
    class address
    {
@@ -30,12 +29,14 @@ namespace bts { namespace blockchain {
        address(); ///< constructs empty / null address
        address( const std::string& base58str );   ///< converts to binary, validates checksum
        address( const fc::ecc::public_key& pub ); ///< converts to binary
+       address( const fc::ecc::public_key_data& pub ); ///< converts to binary
+       address( const pts_address& pub ); ///< converts to binary
+       address( const withdraw_condition& condition );
 
-       bool is_valid()const;
+       static bool is_valid(const std::string& base58str );
+       operator    std::string()const; ///< converts to base58 + checksum
 
-       operator std::string()const; ///< converts to base58 + checksum
-
-       fc::array<char,20> addr;      ///< binary representation of address
+       fc::ripemd160      addr;
    };
    inline bool operator == ( const address& a, const address& b ) { return a.addr == b.addr; }
    inline bool operator != ( const address& a, const address& b ) { return a.addr != b.addr; }
@@ -58,9 +59,7 @@ namespace std
        public:
          size_t operator()(const bts::blockchain::address &a) const 
          {
-            size_t s;
-            memcpy( (char*)&s, &a.addr.data[sizeof(a)-sizeof(s)], sizeof(s) );
-            return s;
+            return (uint64_t(a.addr._hash[0])<<32) | uint64_t( a.addr._hash[0] );
          }
    };
 }

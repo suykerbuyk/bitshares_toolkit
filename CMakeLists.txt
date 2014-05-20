@@ -1,4 +1,4 @@
-# Defines bitshares library target.
+# Defines BitShares library target.
 project( BitShares )
 cmake_minimum_required( VERSION 2.8.12 )
 
@@ -8,10 +8,8 @@ list( APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libraries/fc/GitVers
 include( GetGitRevisionDescription )
 get_git_head_revision( GIT_REFSPEC GIT_SHA2 )
 
-
-
 if( WIN32 )
-    message( STATUS "Configuring Bitshares on WIN32")
+    message( STATUS "Configuring BitShares on WIN32")
     set( DB_VERSION 60 )
     set( BDB_STATIC_LIBS 1 )
 
@@ -26,6 +24,9 @@ if( WIN32 )
     #looks like this flag can have different default on some machines.
     SET(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /SAFESEH:NO")
     SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /SAFESEH:NO")
+
+    # Probably cmake has a bug and vcxproj generated for executable in Debug conf. has disabled debug info
+    set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /DEBUG")
 else( WIN32 )
     if ( ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD" )
        set( FREEBSD true )
@@ -42,7 +43,7 @@ else( WIN32 )
 
     if( APPLE )
         # Apple Specific Options Here
-        message( STATUS "Configuring Bitshares on OS X" )
+        message( STATUS "Configuring BitShares on OS X" )
         set( CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++11 -stdlib=libc++  -Wall -ferror-limit=4" )
     elseif( FREEBSD )
         message( STATUS "Configuring Bitshares on FreeBSD" )
@@ -52,7 +53,7 @@ else( WIN32 )
         set( CMAKE_PREFIX_PATH "/usr/local/" )
     else( APPLE )
         # Linux Specific Options Here
-        message( STATUS "Configuring Bitshares on Linux" )
+        message( STATUS "Configuring BitShares on Linux" )
         set( CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++11 -Wall " )
         set( rt_library rt )
         set( pthread_library pthread)
@@ -64,16 +65,16 @@ endif( WIN32 )
 find_package( BerkeleyDB )
 
 SET(BOOST_COMPONENTS)
-LIST(APPEND BOOST_COMPONENTS thread 
-                             date_time 
-                             system 
-                             filesystem 
-                             program_options 
-                             signals 
-                             serialization 
-                             chrono 
-                             unit_test_framework 
-                             context 
+LIST(APPEND BOOST_COMPONENTS thread
+                             date_time
+                             system
+                             filesystem
+                             program_options
+                             signals
+                             serialization
+                             chrono
+                             unit_test_framework
+                             context
                              locale)
 
 set(Boost_USE_STATIC_LIBS ON)
@@ -101,4 +102,3 @@ add_subdirectory( "${LEVEL_DB_DIR}"    )
 add_subdirectory( vendor/miniupnp/miniupnpc )
 add_subdirectory( programs )
 add_subdirectory( tests )
-#add_subdirectory( programs  )

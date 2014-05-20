@@ -29,6 +29,11 @@ namespace bts { namespace net {
 
     void send_message(const message& message_to_send);
     void close_connection();
+
+    uint64_t get_total_bytes_sent() const;
+    uint64_t get_total_bytes_received() const;
+    fc::time_point get_last_message_sent_time() const;
+    fc::time_point get_last_message_received_time() const;
   private:
     std::unique_ptr<detail::message_oriented_connection_impl> my;
   };
